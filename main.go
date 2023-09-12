@@ -35,6 +35,7 @@ func l(u *user.User, d *Data) {
 	if !ok {
 		os.Exit(0)
 	}
+
 	for _, s := range strings.Split(s, ";") {
 		s = strings.ReplaceAll(s, "~", u.HomeDir)
 		s = strings.ReplaceAll(s, "$?", d.LastRun)
@@ -48,6 +49,7 @@ func l(u *user.User, d *Data) {
 		if len(ss) == 0 {
 			return
 		}
+
 		switch ss[0] {
 		case "exit":
 			var c int
@@ -66,6 +68,7 @@ func l(u *user.User, d *Data) {
 				fmt.Printf("%s: syntax error.\n", os.Getenv("SHELL"))
 				return
 			}
+
 			if err := os.Chdir(ss[1]); err != nil {
 				if errors.Is(err, os.ErrNotExist) {
 					fmt.Printf("%s: no such file or directory: %s\n", os.Getenv("SHELL"), ss[1])
