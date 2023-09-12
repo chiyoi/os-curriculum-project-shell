@@ -1,5 +1,5 @@
 package main
 
-var Table struct {
+type Data struct {
 	LastRun string
 }

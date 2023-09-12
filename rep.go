@@ -4,19 +4,22 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/user"
+	"strconv"
+	"strings"
 )
 
-func r() (s string, ok bool) {
-	u, e1 := user.Current()
-	h, e2 := os.Hostname()
-	p, e3 := os.Getwd()
-	if e1 != nil || e2 != nil || e3 != nil {
-		panic(fmt.Sprint(e1, e2, e3))
+func r(u *user.User) (s string, ok bool) {
+	h, e1 := os.Hostname()
+	p, e2 := os.Getwd()
+	if e1 != nil || e2 != nil {
+		panic(fmt.Sprint(e1, e2))
 	}
-	fmt.Printf("[%s@%s %s]$ ", u.Name, h, p)
+	p = strings.ReplaceAll(p, u.HomeDir, "~")
+	fmt.Printf("[%s@%s %s]$ ", u.Username, h, p)
 
 	sc := bufio.NewScanner(os.Stdin)
 	ok = sc.Scan()
@@ -24,21 +27,30 @@ func r() (s string, ok bool) {
 	return
 }
 
-func e(ss []string, bg bool) (out chan string) {
-	out = make(chan string, 1)
-
+func e(ss []string, bg bool, in io.Reader, out io.Writer, d *Data) {
 	cmd := exec.Command(ss[0], ss[1:]...)
-	cmd.Stdout = ChanWriter(out)
-	cmd.Stderr = ChanWriter(out)
+	cmd.Stdin = in
+	cmd.Stdout = out
+	cmd.Stderr = os.Stdout
 
 	run := func() {
-		defer close(out)
+		defer func() {
+			if c, ok := out.(ChannelRW); ok {
+				close(c)
+			}
+		}()
+
 		if err := cmd.Run(); err != nil {
 			if errors.Is(err, exec.ErrNotFound) {
-				out <- fmt.Sprintf("%s: command not found:%s\n", os.Getenv("SHELL"), ss[0])
+				fmt.Fprintf(out, "%s: command not found:%s\n", os.Getenv("SHELL"), ss[0])
+			} else if ee := (*exec.ExitError)(nil); errors.As(err, &ee) {
+				d.LastRun = strconv.Itoa(ee.ProcessState.ExitCode())
+			} else {
+				panic(err)
 			}
 			return
 		}
+		d.LastRun = "0"
 	}
 
 	if bg {
@@ -46,34 +58,25 @@ func e(ss []string, bg bool) (out chan string) {
 	} else {
 		run()
 	}
-	return
 }
 
-func p(out chan string, bg bool) {
-	if out == nil {
+func p(r io.Reader, bg bool) {
+	if r == nil {
 		return
 	}
 
 	pr := func() {
-		for s := range out {
-			fmt.Print(s)
+		bs, err := io.ReadAll(r)
+		if err != nil {
+			fmt.Printf("%s: unknown error.", os.Getenv("SHELL"))
+			return
 		}
+		fmt.Print(string(bs))
 	}
 
 	if bg {
 		go pr()
 	} else {
 		pr()
-	}
-}
-
-type ChanWriter chan string
-
-func (cw ChanWriter) Write(p []byte) (n int, err error) {
-	select {
-	case cw <- string(p):
-		return len(p), nil
-	default:
-		return 0, errors.New("channel unavailable")
 	}
 }
