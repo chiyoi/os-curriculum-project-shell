@@ -190,14 +190,7 @@ func (cw ChannelRW) Write(p []byte) (n int, err error) {
 func (cw ChannelRW) Read(p []byte) (n int, err error) {
 	s, ok := <-cw
 	if ok {
-		copy(p, s)
-		min := func(a, b int) int {
-			if a < b {
-				return a
-			}
-			return b
-		}
-		return min(len(p), len(s)), nil
+		return copy(p, s), nil
 	}
 	return 0, io.EOF
 }
