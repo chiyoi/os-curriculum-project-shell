@@ -2,10 +2,12 @@ package main
 
 import (
 	"os"
+	"os/signal"
 	"os/user"
 )
 
 func main() {
+	signal.Ignore(os.Interrupt)
 	u, err := user.Current()
 	if err != nil {
 		u = &user.User{

@@ -29,7 +29,13 @@ func r(u *user.User) (s string, ok bool) {
 	return
 }
 
-func e(ctx context.Context, ss []string, in io.Reader, out io.Writer, d *Data) {
+func e(ss []string, in io.Reader, out io.Writer, d *Data) {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer func() {
+		stop()
+		signal.Ignore(os.Interrupt)
+	}()
+
 	cmd := exec.CommandContext(ctx, ss[0], ss[1:]...)
 	cmd.Stdin = in
 	cmd.Stdout = out
@@ -71,18 +77,24 @@ func l(u *user.User, d *Data) {
 		os.Exit(0)
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer func() {
-		stop()
-		signal.Ignore(os.Interrupt)
-	}()
 	for _, s := range strings.Split(s, ";") {
 		s = strings.ReplaceAll(s, "~", u.HomeDir)
-		s = strings.ReplaceAll(s, "$?", d.LastRun)
-		s = strings.ReplaceAll(s, "$*", strings.Join(os.Args[1:], " "))
-		for i, a := range os.Args[1:] {
-			s = strings.ReplaceAll(s, fmt.Sprintf("$%d", i), a)
-		}
+		s = os.Expand(s, func(ss string) string {
+			switch ss {
+			case "?":
+				return d.LastRun
+			case "*", "@":
+				return strings.Join(os.Args[1:], " ")
+			case "#":
+				return strconv.Itoa(len(os.Args) - 1)
+			}
+
+			i, err := strconv.Atoi(ss)
+			if err == nil && i < len(os.Args) {
+				return os.Args[i]
+			}
+			return ""
+		})
 		s = os.ExpandEnv(s)
 
 		ss := strings.Fields(s)
@@ -149,7 +161,6 @@ func l(u *user.User, d *Data) {
 			var out io.Writer
 			if rw != nil {
 				in = rw
-				rw = nil
 			}
 
 			for i := range rio {
@@ -180,17 +191,13 @@ func l(u *user.User, d *Data) {
 			if in == nil {
 				in = os.Stdin
 			}
-
-			if i+1 < len(cs) || out == nil {
+			if i == len(cs)-1 && out != nil {
+				rw = nil
+			} else {
 				rw = MakeChannelRW(0)
-				if out == nil {
-					out = rw
-				} else {
-					out = io.MultiWriter(out, rw)
-				}
+				out = tw(out, rw)
 			}
-
-			go e(ctx, ss, in, out, d)
+			go e(ss, in, out, d)
 		}
 
 		if bg {
@@ -202,7 +209,7 @@ func l(u *user.User, d *Data) {
 }
 
 func tr(r, r1 io.Reader) io.Reader {
-	if r != nil {
+	if r == nil {
 		return r1
 	}
 	return io.MultiReader(r, r1)
@@ -221,17 +228,19 @@ func MakeChannelRW(n int) ChannelRW {
 	return make(chan []byte, n)
 }
 
-func (cw ChannelRW) Write(p []byte) (n int, err error) {
-	select {
-	case cw <- p:
-		return len(p), nil
-	default:
-		return 0, errors.New("channel unavailable")
-	}
+func (c ChannelRW) Write(p []byte) (n int, err error) {
+	defer func() {
+		if err := recover(); err != nil {
+			n = 0
+			err = errors.New("channel closed")
+		}
+	}()
+	c <- p
+	return len(p), nil
 }
 
-func (cw ChannelRW) Read(p []byte) (n int, err error) {
-	s, ok := <-cw
+func (c ChannelRW) Read(p []byte) (n int, err error) {
+	s, ok := <-c
 	if ok {
 		return copy(p, s), nil
 	}
