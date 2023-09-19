@@ -29,7 +29,7 @@ func r(u *user.User) (s string, ok bool) {
 	return
 }
 
-func e(ss []string, in io.Reader, out io.Writer, d *Data) {
+func e(ss []string, in io.Reader, out, err io.Writer, d *Data) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer func() {
 		stop()
@@ -39,7 +39,7 @@ func e(ss []string, in io.Reader, out io.Writer, d *Data) {
 	cmd := exec.CommandContext(ctx, ss[0], ss[1:]...)
 	cmd.Stdin = in
 	cmd.Stdout = out
-	cmd.Stderr = out
+	cmd.Stderr = err
 
 	defer func() {
 		if c, ok := out.(ChannelRW); ok {
@@ -151,39 +151,26 @@ func l(u *user.User, d *Data) {
 
 			var rio []string
 			for i := range ss {
-				if ss[i] == "<" || ss[i] == ">" {
+				if resolver(ss[i]) != nil {
 					ss, rio = ss[:i], ss[i:]
 					break
 				}
 			}
 
 			var in io.Reader
-			var out io.Writer
+			var out, err io.Writer
 			if rw != nil {
 				in = rw
 			}
 
 			for i := range rio {
-				if rio[i] == "<" || rio[i] == ">" {
-					if i+1 >= len(rio) {
-						fmt.Printf("%s: syntax error.\n", os.Getenv("SHELL"))
-						return
+				if resolve := resolver(rio[i]); resolve != nil {
+					var f string
+					if i+1 < len(rio) {
+						f = rio[i+1]
 					}
-
-					if rio[i] == "<" {
-						f, err := os.Open(rio[i+1])
-						if err != nil {
-							fmt.Printf("%s: no such file or directory: %s\n", os.Getenv("SHELL"), rio[i+1])
-							return
-						}
-						in = tr(in, f)
-					} else {
-						f, err := os.Create(rio[i+1])
-						if err != nil {
-							fmt.Printf("%s: open file failed: %s\n", os.Getenv("SHELL"), rio[i+1])
-							return
-						}
-						out = tw(out, f)
+					if resolve == nil || !resolve(f, &in, &out, &err) {
+						return
 					}
 				}
 			}
@@ -197,7 +184,10 @@ func l(u *user.User, d *Data) {
 				rw = MakeChannelRW(0)
 				out = tw(out, rw)
 			}
-			go e(ss, in, out, d)
+			if err == nil {
+				err = os.Stderr
+			}
+			go e(ss, in, out, err, d)
 		}
 
 		if bg {
@@ -205,6 +195,104 @@ func l(u *user.User, d *Data) {
 		} else {
 			p(rw)
 		}
+	}
+}
+
+// Helpers
+
+func resolver(symbol string) func(f string, in *io.Reader, out, er *io.Writer) (ok bool) {
+	switch symbol {
+	case ">", "1>":
+		return func(f string, in *io.Reader, out, er *io.Writer) (ok bool) {
+			fd, err := os.Create(f)
+			if err != nil {
+				fmt.Printf("%s: open file failed: %s\n", os.Getenv("SHELL"), f)
+				return
+			}
+			ok = true
+			*out = tw(*out, fd)
+			return
+		}
+	case ">>", "1>>":
+		return func(f string, in *io.Reader, out, er *io.Writer) (ok bool) {
+			fd, err := os.OpenFile(f, os.O_RDWR|os.O_APPEND, 0)
+			if err != nil {
+				fmt.Printf("%s: open file failed: %s\n", os.Getenv("SHELL"), f)
+				return
+			}
+			ok = true
+			*out = tw(*out, fd)
+			return
+		}
+	case "<", "0<":
+		return func(f string, in *io.Reader, out, er *io.Writer) (ok bool) {
+			fd, err := os.Open(f)
+			if err != nil {
+				fmt.Printf("%s: no such file or directory: %s\n", os.Getenv("SHELL"), f)
+				return
+			}
+			ok = true
+			*in = tr(*in, fd)
+			return
+		}
+	case "2>":
+		return func(f string, in *io.Reader, out, er *io.Writer) (ok bool) {
+			fd, err := os.Create(f)
+			if err != nil {
+				fmt.Printf("%s: open file failed: %s\n", os.Getenv("SHELL"), f)
+				return
+			}
+			ok = true
+			*er = tw(*er, fd)
+			return
+		}
+	case "2>>":
+		return func(f string, in *io.Reader, out, er *io.Writer) (ok bool) {
+			fd, err := os.OpenFile(f, os.O_RDWR|os.O_APPEND, 0)
+			if err != nil {
+				fmt.Printf("%s: open file failed: %s\n", os.Getenv("SHELL"), f)
+				return
+			}
+			ok = true
+			*er = tw(*er, fd)
+			return
+		}
+	case "&>":
+		return func(f string, in *io.Reader, out, er *io.Writer) (ok bool) {
+			fd, err := os.Create(f)
+			if err != nil {
+				fmt.Printf("%s: open file failed: %s\n", os.Getenv("SHELL"), f)
+				return
+			}
+			ok = true
+			*out = tw(*out, fd)
+			*er = tw(*er, fd)
+			return
+		}
+	case "&>>":
+		return func(f string, in *io.Reader, out, er *io.Writer) (ok bool) {
+			fd, err := os.OpenFile(f, os.O_RDWR|os.O_APPEND, 0)
+			if err != nil {
+				fmt.Printf("%s: open file failed: %s\n", os.Getenv("SHELL"), f)
+				return
+			}
+			ok = true
+			*out = tw(*out, fd)
+			*er = tw(*er, fd)
+			return
+		}
+	case "1<&1", "1<&2", "2<&1", "2<&2", "1>&0", ">&0", "2>&0":
+		return func(f string, in *io.Reader, out, er *io.Writer) (ok bool) {
+			fmt.Printf("%s: invalid redirect: %s\n", os.Getenv("SHELL"), symbol)
+			return
+		}
+	case "2>&1", "1>&1", ">&1", "1>&2", ">&2", "2>&2", "0<&1", "<&1", "0<&2", "<&2", "<<<", "<<":
+		return func(f string, in *io.Reader, out, er *io.Writer) (ok bool) {
+			// TODO
+			return
+		}
+	default:
+		return nil
 	}
 }
 
