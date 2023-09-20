@@ -71,14 +71,28 @@ func p(r io.Reader) {
 	}
 }
 
-func l(u *user.User, d *Data) {
+func l(d *Data) {
+	// Get necessary environment.
+	u, err := user.Current()
+	if err != nil {
+		u = &user.User{
+			Username: "Unknown",
+			HomeDir:  "/",
+		}
+	}
+
+	// Wait for input.
 	s, ok := r(u)
 	if !ok {
 		os.Exit(0)
 	}
 
+	// Resolve and execute command.
 	for _, s := range strings.Split(s, ";") {
+		// Expend variables.
 		s = strings.ReplaceAll(s, "~", u.HomeDir)
+		s = strings.ReplaceAll(s, "<()", os.Stdin.Name())
+		s = strings.ReplaceAll(s, ">()", os.Stdout.Name())
 		s = os.Expand(s, func(ss string) string {
 			switch ss {
 			case "?":
@@ -93,15 +107,14 @@ func l(u *user.User, d *Data) {
 			if err == nil && i < len(os.Args) {
 				return os.Args[i]
 			}
-			return ""
+			return os.Getenv(ss)
 		})
-		s = os.ExpandEnv(s)
 
+		// Resolve Builtin commands.
 		ss := strings.Fields(s)
 		if len(ss) == 0 {
 			return
 		}
-
 		switch ss[0] {
 		case "exit":
 			var c int
@@ -131,11 +144,13 @@ func l(u *user.User, d *Data) {
 			return
 		}
 
+		// Flag Background.
 		var bg bool
 		if ss[len(ss)-1] == "&" {
 			bg = true
 		}
 
+		// Resolve Redirection.
 		var rw io.ReadWriter
 		cs := strings.Split(s, "|")
 		for i, c := range cs {
@@ -151,7 +166,7 @@ func l(u *user.User, d *Data) {
 
 			var rio []string
 			for i := range ss {
-				if resolver(ss[i]) != nil {
+				if RedirectionResolver(ss[i]) != nil {
 					ss, rio = ss[:i], ss[i:]
 					break
 				}
@@ -164,7 +179,7 @@ func l(u *user.User, d *Data) {
 			}
 
 			for i := range rio {
-				if resolve := resolver(rio[i]); resolve != nil {
+				if resolve := RedirectionResolver(rio[i]); resolve != nil {
 					var f string
 					if i+1 < len(rio) {
 						f = rio[i+1]
@@ -187,150 +202,16 @@ func l(u *user.User, d *Data) {
 			if err == nil {
 				err = os.Stderr
 			}
+
+			// Run command.
 			go e(ss, in, out, err, d)
 		}
 
+		// Print result.
 		if bg {
 			go p(rw)
 		} else {
 			p(rw)
 		}
 	}
-}
-
-// Helpers
-
-func resolver(symbol string) func(f string, in *io.Reader, out, er *io.Writer) (ok bool) {
-	switch symbol {
-	case ">", "1>":
-		return func(f string, in *io.Reader, out, er *io.Writer) (ok bool) {
-			fd, err := os.Create(f)
-			if err != nil {
-				fmt.Printf("%s: open file failed: %s\n", os.Getenv("SHELL"), f)
-				return
-			}
-			ok = true
-			*out = tw(*out, fd)
-			return
-		}
-	case ">>", "1>>":
-		return func(f string, in *io.Reader, out, er *io.Writer) (ok bool) {
-			fd, err := os.OpenFile(f, os.O_RDWR|os.O_APPEND, 0)
-			if err != nil {
-				fmt.Printf("%s: open file failed: %s\n", os.Getenv("SHELL"), f)
-				return
-			}
-			ok = true
-			*out = tw(*out, fd)
-			return
-		}
-	case "<", "0<":
-		return func(f string, in *io.Reader, out, er *io.Writer) (ok bool) {
-			fd, err := os.Open(f)
-			if err != nil {
-				fmt.Printf("%s: no such file or directory: %s\n", os.Getenv("SHELL"), f)
-				return
-			}
-			ok = true
-			*in = tr(*in, fd)
-			return
-		}
-	case "2>":
-		return func(f string, in *io.Reader, out, er *io.Writer) (ok bool) {
-			fd, err := os.Create(f)
-			if err != nil {
-				fmt.Printf("%s: open file failed: %s\n", os.Getenv("SHELL"), f)
-				return
-			}
-			ok = true
-			*er = tw(*er, fd)
-			return
-		}
-	case "2>>":
-		return func(f string, in *io.Reader, out, er *io.Writer) (ok bool) {
-			fd, err := os.OpenFile(f, os.O_RDWR|os.O_APPEND, 0)
-			if err != nil {
-				fmt.Printf("%s: open file failed: %s\n", os.Getenv("SHELL"), f)
-				return
-			}
-			ok = true
-			*er = tw(*er, fd)
-			return
-		}
-	case "&>":
-		return func(f string, in *io.Reader, out, er *io.Writer) (ok bool) {
-			fd, err := os.Create(f)
-			if err != nil {
-				fmt.Printf("%s: open file failed: %s\n", os.Getenv("SHELL"), f)
-				return
-			}
-			ok = true
-			*out = tw(*out, fd)
-			*er = tw(*er, fd)
-			return
-		}
-	case "&>>":
-		return func(f string, in *io.Reader, out, er *io.Writer) (ok bool) {
-			fd, err := os.OpenFile(f, os.O_RDWR|os.O_APPEND, 0)
-			if err != nil {
-				fmt.Printf("%s: open file failed: %s\n", os.Getenv("SHELL"), f)
-				return
-			}
-			ok = true
-			*out = tw(*out, fd)
-			*er = tw(*er, fd)
-			return
-		}
-	case "1<&1", "1<&2", "2<&1", "2<&2", "1>&0", ">&0", "2>&0":
-		return func(f string, in *io.Reader, out, er *io.Writer) (ok bool) {
-			fmt.Printf("%s: invalid redirect: %s\n", os.Getenv("SHELL"), symbol)
-			return
-		}
-	case "2>&1", "1>&1", ">&1", "1>&2", ">&2", "2>&2", "0<&1", "<&1", "0<&2", "<&2", "<<<", "<<":
-		return func(f string, in *io.Reader, out, er *io.Writer) (ok bool) {
-			// TODO
-			return
-		}
-	default:
-		return nil
-	}
-}
-
-func tr(r, r1 io.Reader) io.Reader {
-	if r == nil {
-		return r1
-	}
-	return io.MultiReader(r, r1)
-}
-
-func tw(w, w1 io.Writer) io.Writer {
-	if w == nil {
-		return w1
-	}
-	return io.MultiWriter(w, w1)
-}
-
-type ChannelRW chan []byte
-
-func MakeChannelRW(n int) ChannelRW {
-	return make(chan []byte, n)
-}
-
-func (c ChannelRW) Write(p []byte) (n int, err error) {
-	defer func() {
-		if err := recover(); err != nil {
-			n = 0
-			err = errors.New("channel closed")
-		}
-	}()
-	c <- p
-	return len(p), nil
-}
-
-func (c ChannelRW) Read(p []byte) (n int, err error) {
-	s, ok := <-c
-	if ok {
-		return copy(p, s), nil
-	}
-	return 0, io.EOF
 }
