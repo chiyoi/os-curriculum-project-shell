@@ -91,8 +91,6 @@ func l(d *Data) {
 	for _, s := range strings.Split(s, ";") {
 		// Expend variables.
 		s = strings.ReplaceAll(s, "~", u.HomeDir)
-		s = strings.ReplaceAll(s, "<()", os.Stdin.Name())
-		s = strings.ReplaceAll(s, ">()", os.Stdout.Name())
 		s = os.Expand(s, func(ss string) string {
 			switch ss {
 			case "?":
